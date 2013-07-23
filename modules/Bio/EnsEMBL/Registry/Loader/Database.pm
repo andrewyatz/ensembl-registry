@@ -4,14 +4,21 @@ use strict;
 use warnings;
 use base qw/Bio::EnsEMBL::Registry::Loader::Base/;
 
+use Bio::EnsEMBL::ApiVersion qw(software_version);
 use Bio::EnsEMBL::DBSQL::DBConnection;
 use Bio::EnsEMBL::Utils::Argument qw(rearrange);
 use Bio::EnsEMBL::Utils::Exception qw(warning);
+
+my $PRODUCTION_NAME_META_KEY = 'species.production_name';
+my $ALIAS_META_KEY = 'species.alias';
 
 =head2 load_registry
 
   Arg [HOST] : string
                 The domain name of the database host to connect to.
+
+  Arg [PORT] : (optional) integer
+                The port to use when connecting to the database.
 
   Arg [USER] : string
                 The name of the database user to connect with.
@@ -19,25 +26,9 @@ use Bio::EnsEMBL::Utils::Exception qw(warning);
   Arg [PASS] : (optional) string
                 The password to be used to connect to the database.
 
-  Arg [PORT] : (optional) integer
-                The port to use when connecting to the database.
-
-  Arg [SPECIES]: (optional) string
-                By default, all databases that are found on the
-                server and that corresponds to the correct release
-                are probed for aliases etc.  For some people,
-                depending on where they are in the world, this might
-                be a slow operation.  With the '-species' argument,
-                one may reduce the startup time by restricting the
-                set of databases that are probed to those of a
-                particular species.
-
-                Note that the latin name of the species is required,
-                e.g., 'homo sapiens', 'gallus gallus', 'callithrix
-                jacchus' etc.  It may be the whole species name,
-                or only the first part of the name, e.g. 'homo',
-                'gallus', or 'callithrix'.  This will be used in
-                matching against the name of the databases.
+  Arg [VERBOSE]: (optional) boolean
+                Whether to print database messages. This includes a listing
+                of all available species & databases.
 
   Arg [DB_VERSION]: (optional) integer
                 By default, only databases corresponding to the
@@ -56,6 +47,23 @@ use Bio::EnsEMBL::Utils::Exception qw(warning);
                 getting deleted.  Only set this if you are having
                 problems and know what you are doing.
 
+  Arg [SPECIES]: (optional) string
+                By default, all databases that are found on the
+                server and that corresponds to the correct release
+                are probed for aliases etc.  For some people,
+                depending on where they are in the world, this might
+                be a slow operation.  With the '-species' argument,
+                one may reduce the startup time by restricting the
+                set of databases that are probed to those of a
+                particular species.
+
+                Note that the latin name of the species is required,
+                e.g., 'homo sapiens', 'gallus gallus', 'callithrix
+                jacchus' etc.  It may be the whole species name,
+                or only the first part of the name, e.g. 'homo',
+                'gallus', or 'callithrix'.  This will be used in
+                matching against the name of the databases.
+              
    Arg [SPECIES_SUFFIX]: (optional) string
                 This option will append the string to the species name
                 in the registry for all databases found on this server.
@@ -81,19 +89,25 @@ use Bio::EnsEMBL::Utils::Exception qw(warning);
 
 sub load_registry {
   my ($self, @args) = @_;
-  my (  $host,         $port,     $user,
-        $pass,         $db_version,
-        $wait_timeout, $species,
-        $species_suffix )
-    = rearrange( [  'HOST',          'PORT',
-                    'USER',          'PASS',
-                    'DB_VERSION',
-                    'WAIT_TIMEOUT',
-                    'SPECIES',       'SPECIES_SUFFIX' ], @args );
+  my ( $host,         $port,     $user,
+       $pass,         $verbose,  $db_version,
+       $wait_timeout, $no_cache, $species, $species_suffix )
+    = rearrange( [ 'HOST',          'PORT',
+                   'USER',          'PASS',
+                   'VERBOSE',       'DB_VERSION',
+                   'WAIT_TIMEOUT',  'NO_CACHE',
+                   'SPECIES',       'SPECIES_SUFFIX' ],
+                 @args );
 
+  
   my $registry = $self->registry();
-  my $verbose = $self->verbose();
-  my $no_caching = $self->no_caching();
+  
+  #If we were given a -VERBOSE or -NO_CACHE flag then set them & grab
+  #back since it could have already been set
+  $self->verbose($verbose) if $verbose;
+  $verbose = $self->verbose($verbose);
+  $self->no_cache($no_cache) if $no_cache;
+  $no_cache = $self->no_cache();
 
   if(defined $species) {
     $species = lc($species);
@@ -131,15 +145,18 @@ sub load_registry {
     -PASS         => $pass,
     -PORT         => $port,
     -WAIT_TIMEOUT => $wait_timeout,
-    -NO_CACHE     => $no_caching
+    -NO_CACHE     => $no_cache
   );
   
-  #Single DBC for all DB operations
+  #Single DBC for all DB operations. Force a connection by requesting the handle
+  #and causing an early bail from here rather than lower down the stack
   my $dbc = Bio::EnsEMBL::DBSQL::DBConnection->new(%basic_args);
+  $dbc->db_handle();
   
   my $regex_patterns = $self->_patterns();
   my $alias_available = $self->_alias_available();
   my $default_aliases = $self->_default_aliases($species_suffix);
+  my $species_filter_groups = $self->_species_filter_groups();
   
   #Query database for the available databases
   my @databases = @{$self->_get_databases($dbc, $version)};
@@ -169,34 +186,32 @@ sub load_registry {
     for(my $i = 0; $i < $db_count; $i++) {
       my $db_name = $databases[$i];
       
-      #happens because we undef the DB names once we've successfully
-      #processed it. Sucky logic.
-      #TODO come up with some better logic to process a list like a Java
-      #iterator e.g. iter.remove() the current element from a list & then call iter.next()
-      next unless defined $db_name;
-      
-      my $species = undef;
+      my $parsed_species = undef;
       my $database_version = undef;
       my $multispecies = 0;
       
       # If we have a collection regex & it matched then we have a multi-species
       # database.
       if(defined $collection_re && $db_name =~ $collection_re) {
-        ($species, $database_version) = ($1, $2);
+        ($parsed_species, $database_version) = ($1, $2);
         $multispecies = 1;
       }
       #Otherwise just a normal DB
       if(! $multispecies && $db_name =~ $single_re) {
-        ($species, $database_version) = ($1, $2);
+        ($parsed_species, $database_version) = ($1, $2);
       }
       
       #Skip if we had no hit for species. Means we do not want to process this for this group
-      next if ! defined $species;
+      next if ! defined $parsed_species;
+      
+      #Check if it matches the $parsed_species matches the $species value
+      next if defined $species && $species_filter_groups->{$group} && $parsed_species !~ /^$species/;
       
       #Process only if the DB version matched the requested
       if($version == $database_version) {
         #Convert from a name & a connection to a 2D array of [species_id,name]
-        my $to_load = $self->_get_dbas_to_load($dbc, $db_name, $species, $multispecies);
+        my $to_load = $self->_get_dbas_to_load($dbc, $db_name, $parsed_species, $multispecies);
+        my @created_dbas;
         foreach my $dba_to_load (@{$to_load}) {
           my ($target_species_id, $target_species) = @{$dba_to_load};
           
@@ -213,19 +228,40 @@ sub load_registry {
             -DBNAME => $db_name,
             %basic_args
           );
+          push(@created_dbas, $dba);
           
-          my $aliases = ($alias_available->{$group}) ? $self->get_aliases($dbc, $dba, $species_suffix) : [] ; 
-          $registry->add_alias($species, $aliases);
-          
-          printf( "Species '%s' (id:%d) group '%s' loaded from database '%s'\n", $target_species, $target_species_id, $target_group, $db_name ) if $verbose;
+          printf( "Species '%s' loaded from database '%s' (group : %s | id : %d)\n", $target_species, $db_name, $target_group, $target_species_id ) if $verbose;
+        }
+
+        #Apologies this is nasty. If we have a DB type that supports aliases then attempt a load.
+        if($alias_available->{$group}) {
+          # If it was a multi-species DB then do a batch load for all aliases (for speeds sake)
+          if($multispecies) {
+            my $aliases = $self->get_all_database_aliases($dbc, $db_name, $species_suffix);
+            foreach my $parsed_species (keys %{$aliases}) {
+              $registry->add_alias($parsed_species, $aliases->{$species});
+            }
+          }
+          #Otherwise we just do one load for the single DB (there should only be one dba created)
+          else {
+            my $dba = shift @created_dbas;
+            my $aliases = $self->get_aliases($dbc, $dba, $species_suffix);
+            $registry->add_alias($dba->species(), $aliases);
+          }
         }
       }
       else {
         printf("Not processing '%s' (%s) as its detected version %d is not the same as the requested version %d\n", 
-          $species, $db_name, $database_version, $version) if $verbose;        
+          $parsed_species, $db_name, $database_version, $version) if $verbose;        
       }
       
-      $databases[$i] = undef;
+      splice(@databases, $i, 1); #remove current element
+      if($#databases == -1) { # if the last element index is -1 then finish the loop; the array is exhausted
+        last;
+      }
+      #otherwise bring the iterator back one and decrement the size of the array by one
+      $i--;
+      $db_count--;
     }
     
     foreach my $key (keys %{$default_aliases}) {
@@ -240,7 +276,8 @@ sub load_registry {
 
 =head2 get_aliases
 
-  Arg[1]     : Bio::EnsEMBL::DBSQL::DBConnection connection to the DB server
+  Arg[1]     : (optional) Bio::EnsEMBL::DBSQL::DBConnection connection to the DB server. If
+               not given we will use the supplied DBAdaptor's DBConnection
   Arg[2]     : Bio::EnsEMBL::DBSQL::DBAdaptor instance/species to lookup aliases for
   Arg[3]     : (optional) String Species suffix to add to all found aliases 
   Example    : $database_loader->get_aliases($dbc, $dba);
@@ -258,16 +295,85 @@ sub load_registry {
 sub get_aliases {
   my ($self, $dbc, $dba, $species_suffix) = @_;
   $species_suffix ||= q{};
-  my ($quoted_table_name) = $dbc->quote_identifier([undef, $dba->dbc()->dbname(), 'meta']);
-  my $sql = sprintf('SELECT meta_value FROM %s WHERE meta_key =? and species_id =?', $quoted_table_name);
-  my $meta_results = $dbc->sql_helper()->execute_simple(-SQL => $sql, -PARAMS => ['species.alias', $dba->species_id()]);
+  $dbc ||= $dba->dbc();
+  my ($quoted_table_name) = @{$dbc->quote_identifier([undef, $dba->dbc()->dbname(), 'meta'])};
+  my $sql = sprintf('SELECT meta_value FROM %s WHERE meta_key =?', $quoted_table_name);
+  my @params = ($ALIAS_META_KEY);
+  if($dba->is_multispecies()) {
+    $sql .= ' and species_id =?';
+    push(@params, $dba->species_id());
+  }
+  my $meta_results = $dbc->sql_helper()->execute_simple(-SQL => $sql, -PARAMS => \@params);
   return [ map { $_.$species_suffix } @{$meta_results}];
 }
+
+=head2 get_all_database_aliases
+
+  Arg[1]     : Bio::EnsEMBL::DBSQL::DBConnection connection to the DB server
+  Arg[2]     : (optional) String Database to look in. If not given then we use the database name
+               the DBConnection instance is pointing to
+  Arg[3]     : (optional) String Species suffix to add to all found aliases 
+  Example    : $database_loader->get_all_database_aliases($dbc);
+  Description: Queries the meta table for the given DBConnection. Should only be run
+               on DBConnections which can provide this kind of table and data 
+               (such as core). The database should provide the species name in the
+               species.production_name meta value and aliases in the species.alias meta value
+  Returntype : HashRef keyed by species name and value is an ArrayRef of aliases
+  Exceptions : Thrown in the event of a DBI error
+  Caller     : General
+  Status     : At risk
+
+=cut
+
+sub get_all_database_aliases {
+  my ($self, $dbc, $dbname, $species_suffix) = @_;
+  $species_suffix ||= q{};
+  $dbname ||= $dbc->dbname();
+  my ($quoted_table_name) = @{$dbc->quote_identifier([undef, $dbname, 'meta'])};
+  my $sql_template = <<'SQL';
+SELECT m1.meta_value, m2.meta_value 
+FROM %s m1 
+JOIN %s m2 on (m1.species_id = m2.species_id) 
+WHERE m1.meta_key =? AND m2.meta_key =?
+SQL
+  my $sql = sprintf($sql_template, $quoted_table_name, $quoted_table_name);
+  my $params = [$PRODUCTION_NAME_META_KEY, $ALIAS_META_KEY];
+  my $meta_results = $dbc->sql_helper()->execute_into_hash(-SQL => $sql, -PARAMS => $params, -CALLBACK => sub {
+    my ( $row, $value ) = @_;
+    if ( defined $value ) {
+      push( @{$value}, $row->[1] );
+      return;
+    }
+    my $new_value = [ $row->[1] ];
+    return $new_value;
+  });
+  return $meta_results;
+}
+
+=head2 _get_version
+
+  Arg[1]      : (optional) Integer The possible db_version
+  Description : Provides a default version which is software version
+                if a db_version was not defined
+  Returntype  : Integer The version of Ensembl to query for
+
+=cut
 
 sub _get_version {
   my ($self, $db_version) = @_;
   return (defined $db_version) ? $db_version : software_version();
 }
+
+=head2 _get_databases
+
+  Arg[1]      : Bio::EnsEMBL::DBSQL::DBConnection Used to query a server with
+  Arg[2]      : Integer The version of Ensembl to look for
+  Description : Queries the provided database instance for all databases matching
+                the given version or the userdata DBs. All DBs should be
+                post-processed to ensure they match the correct release version
+  Returntype  : ArrayRef of possible database names
+
+=cut
 
 sub _get_databases {
   my ($self, $dbc, $version) = @_;
@@ -277,6 +383,18 @@ sub _get_databases {
   }
   return \@dbs;
 }
+
+=head2 _get_dbas_to_load
+
+  Arg[1]      : Bio::EnsEMBL::DBSQL::DBConnection Used to query a server with
+  Arg[2]      : String The database name to query against
+  Arg[3]      : String Potential species name
+  Arg[4]      : Boolean Flags if this is a multi-species database
+  Description : Used to direct queries off to C<_multispecies_species()> or to 
+                return the species with a species_id of 1.
+  Returntype  : ArrayRef (2D). Structure is [[species_id, species_name]]
+
+=cut
 
 sub _get_dbas_to_load {
   my ($self, $dbc, $db_name, $species, $multispecies) = @_;
@@ -290,12 +408,52 @@ sub _get_dbas_to_load {
   return $output;
 }
 
+=head2 _multispecies_species
+
+  Arg[1]      : Bio::EnsEMBL::DBSQL::DBConnection Used to query the server with
+  Arg[2]      : String The database name to query against
+  Description : Query a schema for all available multi-species which is done by 
+                querying for all production names and their associcated species identifier
+  Returntype  : ArrayRef (2D). Structure is [[species_id, species_name]]
+
+=cut
+
 sub _multispecies_species {
   my ($self, $dbc, $db_name) = @_;
-  my ($table) = $dbc->quote_identifier([undef, $db_name, 'meta']);
+  my ($table) = @{$dbc->quote_identifier([undef, $db_name, 'meta'])};
   my $sql = sprintf('SELECT species_id, meta_value FROM %s WHERE meta_key =?', $table);
-  return $dbc->sql_helper()->execute(-SQL => $sql, -PARAMS => ['species.db_name']);
+  return $dbc->sql_helper()->execute(-SQL => $sql, -PARAMS => [$PRODUCTION_NAME_META_KEY]);
 }
+
+=head2 _species_filter_groups
+
+  Description : Defines a lookup Hash of groups where you can apply 
+                species filtering to respect the -SPECIES flag
+  Returntype  : HashRef key is the group and value is a boolean 
+
+=cut
+
+sub _species_filter_groups {
+  my ($self) = @_;
+  return {
+    core => 1,
+    otherfeatures => 1,
+    cdna => 1,
+    vega => 1,
+    rnaseq => 1,
+    variation => 1,
+    funcgen => 1,
+    userupload => 1,
+  };
+}
+
+=head2 _database_order
+
+  Description : Defines the order in which we process groups. They are
+                core, core-like, variation, funcgen, userupload,
+                compara, ancestral, ontology and stable_ids
+  Returntype  : ArrayRef containing Strings of the aformentioned groups
+=cut
 
 sub _database_order {
   my ($self) = @_;
@@ -310,13 +468,31 @@ sub _database_order {
   /];
 }
 
+=head2 _alias_available
+
+  Description : The database groups aliases can be retrieved from.
+                Defaults to core and compara
+  Returntype  : HashRef of groups. Keys are the group names
+
+=cut
+
 sub _alias_available {
   my ($self) = @_;
   return {
-    map { $_ => 1 }
-    qw/core compara/
+    core => 1,
+    compara => 1
   };
 }
+
+=head2 _default_aliases
+
+  Arg[1]      : (optional) String Apply a species suffix to all names and aliases
+  Description : Provides a number of default aliases. Notably it adds
+                multi -> compara, ontology and stable_ids
+                Ancestral sequences -> ancestral_sequences
+  Returntype  : HashRef keyed by the species name. Value is an ArrayRef of aliases
+
+=cut
 
 sub _default_aliases {
   my ($self, $species_suffix) = @_;
@@ -326,19 +502,27 @@ sub _default_aliases {
       "compara${species_suffix}", "ontology${species_suffix}", "stable_ids${species_suffix}"
     ],
     "Ancestral sequences${species_suffix}"  => [
-      "ancestal_sequences${species_suffix}"
+      "ancestral_sequences${species_suffix}"
     ],
   };
 }
 
-#Provides some ability to rename a database species because its offical
-#registry name differs from that which was picked up from the DB name
+=head2 _post_process_name
+
+  Arg[1]      : String The group to process
+  Arg[2]      : String The species name
+  Description : Provides some ability to rename a database species 
+                because its offical registry name differs 
+                from that which was picked up from the DB name
+  Returntype  : String The processed name to use
+=cut
+
 sub _post_process_name {
   my ($self, $group, $species_name) = @_;
   my $altered_name = $species_name;
   if($group eq 'compara') {
-    #inline regex required due to different capture requirements from the defaults
-    if($species_name =~ /^ensembl_compara_([a-zA-Z_])_\d+/xms) { 
+    #Regex which captures any additional names given to a DB e.g. pan_homology or plants
+    if($species_name =~ $self->_patterns()->{NAMES}->{compara}) {  
       $altered_name = $1;
     }
     else {
@@ -354,9 +538,16 @@ sub _post_process_name {
   return $altered_name;
 }
 
-#Force group changes if needed. Ancestral (detected group) should 
-#be core once in the registry. The group ancestral comes from an
-#internal need to know when to grep with a different regex
+=head2 _post_process_group
+
+  Arg[1]      : String The group to process
+  Description : Force group changes if needed. Ancestral (detected group) should 
+                be core once in the registry. The group ancestral comes from an
+                internal need to know when to grep with a different regex
+  Returntype  : String Processed group to use
+
+=cut
+
 sub _post_process_group {
   my ($self, $group) = @_;
   if($group eq 'ancestral') {
@@ -365,8 +556,19 @@ sub _post_process_group {
   return $group;
 }
 
+=head2 _patterns
+
+  Description : Provides a number of pre-compiled regular expressions. 
+                Cached on $self for convenience and to avoid overheads 
+                of repeated calling. This should not be a huge issue IMHO
+  Returntype  : HashRef of all available regex patterns
+
+=cut
+
 sub _patterns {
   my ($self) = @_;
+  
+  return $self->{regex_patterns} if exists $self->{regex_patterns};
     
   my %RE = (
     NAME        => qr{ [a-z]+ _ [a-z0-9]+ (?:_[a-z0-9]+)? }xms, #Name of the DB (binomial & trinomial accepted)
@@ -391,14 +593,16 @@ sub _patterns {
       ANCESTRAL       => qr{_ancestral      }xms,
       ONTOLOGY        => qr{_ontology       }xms,
       STABLE_IDS      => qr{_stable_ids     }xms,
-    }
-  );
-  
-  # Represents [_10]_(63)_1[a] where the E! version is captured
-  $RE{END} = qr/(?:_\d+)? _ (\d+) _ \d \w? /xms;
+    },
     
-  return {
+    END         =>  qr/(?:_\d+)? _ (\d+) _ \d+? \w? /xms, # Represents [_10]_(63)_1[a] where the E! version is captured. The \d+? is important to capture assemblies like 235
+  );
+    
+  my $regex_patterns = {
     PARTIAL => \%RE,    # Provide subcallers with the partial RegEx to avoid re-implementation
+    NAMES => {          # Give the ability to search for a name and capture it
+      compara => qr/^ensembl_compara_ (\w+?) (?:_\d+)? _ \d+ $/xms, #tested with ensembl_compara_72, ensembl_compara_plants_10_72 and ensembl_compara_pan_homology_10_72
+    },
     FULL    => {        # All full regular expressions capture a name and a E! version
       core => {
         single      => qr/^ ($RE{NAME})   $RE{GROUPS}{CORE} $RE{END} $/xms,       # homo_sapiens_core_63_37
@@ -446,6 +650,8 @@ sub _patterns {
       },
     }
   };
+  
+  return $self->{regex_patterns} = $regex_patterns;
 }
 
 1;

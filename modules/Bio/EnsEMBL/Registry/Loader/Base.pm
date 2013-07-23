@@ -10,8 +10,19 @@ use Bio::EnsEMBL::Utils::Scalar qw(check_ref);
 my $CORE_DBADAPTOR = 'Bio::EnsEMBL::DBSQL::DBAdaptor';
 my $REGULATION_DBADAPTOR = 'Bio::EnsEMBL::Funcgen::DBSQL::DBAdaptor';
 
+=head2 new
+
+  Arg[1]      : Bio::EnsEMBL::Registry The Registry instance to interact with
+  Arg[2]      : Boolean Switch verbose statements on or off
+  Arg[3]      : Boolean Switch caching on or off
+  Description : Builds a Base instance of a Loader object
+  Exceptions  : Thrown if registry was not available
+  Returntype  : Bio::EnsEMBL::Registry::Loader::Base instance
+
+=cut
+
 sub new {
-  my ($class, $registry, $verbose, $no_caching) = @_;
+  my ($class, $registry, $verbose, $no_cache) = @_;
   throw "No registry defined" unless $registry;
   
   $class = ref($class) || $class;
@@ -19,10 +30,18 @@ sub new {
     imported_packages => {}, 
     verbose => $verbose, 
     registry => $registry,
-    no_caching => $no_caching }, $class);
+    no_cache => $no_cache }, $class);
   
   return $self;
 }
+
+=head2 registry
+
+  Arg[1]      : Bio::EnsEMBL::Registry The Registry instance to store
+  Description : Getter/setter for the backing registry object
+  Returntype  : Bio::EnsEMBL::Registry
+
+=cut
 
 sub registry {
   my ($self, $registry) = @_;
@@ -30,17 +49,44 @@ sub registry {
   return $self->{registry};
 }
 
+=head2 verbose
+
+  Arg[1]      : Boolean The verbose boolean to store
+  Description : Getter/setter for the verbose flag
+  Returntype  : Boolean
+
+=cut
+
 sub verbose {
   my ($self, $verbose) = @_;
   $self->{verbose} = $verbose if defined $verbose;
   return $self->{verbose};
 }
 
-sub no_caching {
-  my ($self, $no_caching) = @_;
-  $self->{no_caching} = $no_caching if defined $no_caching;
-  return $self->{no_caching};
+=head2 no_cache
+
+  Arg[1]      : Boolean The no cache boolean to store
+  Description : Getter/setter for the no_cache flag. Results in
+                the addition of -NO_CACHE to DBAdaptor construction
+                calls
+  Returntype  : Boolean
+
+=cut
+
+sub no_cache {
+  my ($self, $no_cache) = @_;
+  $self->{no_cache} = $no_cache if defined $no_cache;
+  return $self->{no_cache};
 }
+
+=head2 group_to_adaptor
+
+  Arg[1]      : String The group to process
+  Description : Holds a look up of group name to DBAdaptor instance which
+                should be used to construct if this group is encountered
+  Returntype  : String Class name to use
+
+=cut
 
 sub group_to_adaptor {
   my ($self, $group) = @_;
@@ -60,11 +106,25 @@ sub group_to_adaptor {
     pipeline      => 'Bio::EnsEMBL::Pipeline::DBSQL::DBAdaptor',
     rnaseq        => $CORE_DBADAPTOR,
     snp           => 'Bio::EnsEMBL::ExternalData::SNPSQL::DBAdaptor',
+    stable_ids    => $CORE_DBADAPTOR,
     userupload    => $CORE_DBADAPTOR,
     variation     => 'Bio::EnsEMBL::Variation::DBSQL::DBAdaptor',
     vega          => $CORE_DBADAPTOR,
   }->{$group};
 }
+
+=head2 import_package
+
+  Arg[1]      : String Package to import
+  Arg[2]      : Boolean Raise an error if we cannot import the package
+  Arg[3]      : Boolean Warn about the inability to import
+  Description : Performs a String eval of the given package to import it
+                into our %INC space. Results of repeated calls are
+                remembered meaning we do not always String eval
+  Exceptions  : Thrown if raise error was on
+  Returntype  : Boolean indicating success or failure
+
+=cut
 
 sub import_package {
   my ($self, $package, $raise_error, $verbose) = @_;

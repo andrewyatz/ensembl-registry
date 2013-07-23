@@ -38,7 +38,7 @@ sub load_registry {
   assert_ref($perl_hash, 'HASH', 'perl_hash');
   my $registry = $self->registry();
   my $verbose = $self->verbose();
-  my $no_caching = $self->no_caching();
+  my $no_cache = $self->no_cache();
   
   my %skip_group;
   if(exists $perl_hash->{adaptors}) {
@@ -79,7 +79,7 @@ sub load_registry {
         $adaptor_args{"-${parameter}"} = $adaptor_hash->{$parameter};
       }
       
-      my $dba = $module->new(%adaptor_args, -NO_CACHE => $no_caching);
+      my $dba = $module->new(%adaptor_args, -NO_CACHE => $no_cache);
       
       #Report the load
       printf( "Species '%s' (id:%d) group '%s' loaded\n", $dba->species(), $dba->species_id(), $group) if $verbose;
