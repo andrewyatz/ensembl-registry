@@ -226,7 +226,8 @@ sub load_registry {
             -GROUP => $target_group,
             -IS_MULTISPECIES => $multispecies,
             -DBNAME => $db_name,
-            %basic_args
+            %basic_args,
+            -REGISTRY => $registry,
           );
           push(@created_dbas, $dba);
           

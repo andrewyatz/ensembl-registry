@@ -73,13 +73,13 @@ sub load_registry {
       
       printf("Loading group '%s' with module '%s'\n", $group, $module) if $verbose;
       
-      #Convert from JSON hash into one more compatible with DBAdaptor and rearrange
+      #Convert from perl hash into one more compatible with DBAdaptor and rearrange
       my %adaptor_args;
       foreach my $parameter ( keys %{$adaptor_hash} ) {
         $adaptor_args{"-${parameter}"} = $adaptor_hash->{$parameter};
       }
       
-      my $dba = $module->new(%adaptor_args, -NO_CACHE => $no_cache);
+      my $dba = $module->new(%adaptor_args, -NO_CACHE => $no_cache, -REGISTRY => $registry);
       
       #Report the load
       printf( "Species '%s' (id:%d) group '%s' loaded\n", $dba->species(), $dba->species_id(), $group) if $verbose;

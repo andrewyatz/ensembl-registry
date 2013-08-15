@@ -1,1 +1,9 @@
 /nytprof*
+/.includepath
+/.project
+/json
+/new
+/old
+/datadump_adaptors.pl
+/dumbbench.pl
+

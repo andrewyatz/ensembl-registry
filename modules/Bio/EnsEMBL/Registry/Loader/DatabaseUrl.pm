@@ -47,15 +47,17 @@ use Bio::EnsEMBL::Utils::URI qw(parse_uri);
 
 sub load_registry {
   my ( $self, $url ) = @_;
-    
+  throw "URL was not defined" if ! defined $url;
+  throw "URL was empty" if ! $url;
+  
   #Detecting if we are loading an entire registry from a single DB instance
-  if ( $url =~ /  ^mysql\:\/\/  #look for the scheme mysql://
-                  ([^\@]+\@)?   #find the username and password which is anything that is not an @ symbol. Optional
-                  ([^\:\/]+)    #look for host name which is anything not a :
-                  (\:\d+)?      #find the port. Optional
-                  (\/\d+)?      #release number to look for. Optional
-                  \/?$          #Final optional trailing / parameter. Regex now finishes
-                  /xms ) {
+  if ( $url =~ /^mysql\:\/\/  #look for the scheme mysql
+                ([^\@]+\@)?   #find the username and password which is anything that is not an at symbol. Optional
+                ([^\:\/]+)    #look for host name which is anything not a colon
+                (\:\d+)?      #find the port. Optional
+                (\/\d+)?      #release number to look for. Optional
+                \/?$          #Final optional trailing slashes parameter. Regex now finishes
+                /xms ) {
     my $user_pass = $1;
     my $host      = $2;
     my $port      = $3;
@@ -78,7 +80,7 @@ sub load_registry {
   
   #If we get here then we have been told to load a single adaptor so do so
   my $verbose = $self->verbose();
-  my $no_caching = $self->no_caching();
+  my $no_cache = $self->no_cache();
   
   my $uri = parse_uri($url);
   if($uri && $uri->scheme() eq 'mysql') {
@@ -91,15 +93,14 @@ sub load_registry {
       my $module = $self->group_to_adaptor($group);
       my $success = $self->import_package($module, 0);
       if(! $success) {
-        $skip_group{$group} = 1;
         printf("%s module not found on PERL5LIB so %s databases will be ignored\n", $module, $group) if $verbose;
         next;
       }
 
       if($verbose) {
-        printf("Loading database '%s' from group '%s' with DBAdaptor class '%s' from url %s\n", $params{-DBNAME}, $group, $class, $url);
+        printf("Loading database '%s' from group '%s' with DBAdaptor class '%s' from url %s\n", $params{-DBNAME}, $group, $module, $url);
       }
-      $module->new(%params, -NO_CACHE => $no_caching);
+      $module->new(%params, -NO_CACHE => $no_cache);
       return;
     }
     throw "No dbname was specified in the URL '${url}'";

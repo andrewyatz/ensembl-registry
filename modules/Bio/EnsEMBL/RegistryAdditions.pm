@@ -3,7 +3,7 @@ package Bio::EnsEMBL::RegistryAdditions;
 use strict;
 use warnings;
 
-use Bio::EnsEMBL::Utils::StableIdsDBAadaptorLookup;
+use Bio::EnsEMBL::Utils::StableIdsDBAadptorLookup;
 
 #################################################################################
 ###### None of these methods are meant for this class but for the Registry ######

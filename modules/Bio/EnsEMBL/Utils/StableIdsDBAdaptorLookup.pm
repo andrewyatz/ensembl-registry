@@ -42,15 +42,34 @@ use Bio::EnsEMBL::Utils::Exception qw(throw);
 =head2 new
 
   Arg[1]      : Bio::EnsEMBL::Registry The registry to lookup against
+  Arg[2]      : Boolean Controls if we disconnect the database connection
+                after every query.
   Description : Constructs an instance of the lookup
 
 =cut
 
 sub new {
-  my ($class, $registry) = @_;
+  my ($class, $registry, $disconnect_after_query) = @_;
   throw "Was not given a Registry during construction" if ! $registry;
   $class = ref($class) || $class;
-  return bless({ registry => $registry }, $class);
+  return bless({ registry => $registry, disconnect_after_query => $disconnect_after_query }, $class);
+}
+
+
+=head2 disconnect_after_query
+
+  Arg[1]      : Boolean Controls if we disconnect the database connection
+                after every query.
+  Description : Accessor which allows you to control if we disconnect from the 
+                database after each query for an ID. Very important for 
+                resources with a lot of databases.
+
+=cut
+
+sub disconnect_after_query {
+  my ($self, $disconnect_after_query) = @_;
+  $self->{disconnect_after_query} = $disconnect_after_query if $disconnect_after_query;
+  return $self->{disconnect_after_query};
 }
 
 =head2 fetch_object_location
@@ -97,9 +116,9 @@ sub fetch_object_location {
   }
   
   #Get adaptors
-  my %get_dbadaptor_args = ('-GROUP' => $known_db_type);
-  $get_dbadaptor_args{'-SPECIES'} = $known_species if $known_species;
-  my @dbas = @{$self->{registry}->get_all_DBAdaptors(%get_adaptors_args)};
+  my %get_dbadaptors_args = ('-GROUP' => $known_db_type);
+  $get_dbadaptors_args{'-SPECIES'} = $known_species if $known_species;
+  my @dbas = @{$self->{registry}->get_all_DBAdaptors(%get_dbadaptors_args)};
   
   #Processed DBs are a multi-species only speed-up.
   #Once we've queried a DB we do not need to query it again so store the DBC locator string
@@ -126,7 +145,7 @@ sub fetch_object_location {
   Arg[2]      : ArrayRef of known types of objects to lookup for
   Arg[3]      : Bio::EnsEMBL::DBSQL::DBAdaptor to search against
   Arg[4]      : HashRef of type to SQL statement. Must have one sprintf substitution 
-                available which is the database name
+                available which is the database name or an integer 1 response
   Description : Provides a generic database lookup mechanism for stable id finding
   Returntype  : List of the species, object type and adaptor group it was first found in
 
@@ -135,12 +154,13 @@ sub fetch_object_location {
 sub _db_scan {
   my ($self, $stable_id, $known_types, $dba, $statement_lookup) = @_;
   my $helper = $self->db->dbc->sql_helper();
-  foreach my $type (@t{$known_types}) {
+  foreach my $type (@{$known_types}) {
     #Find the statement & sprintf it
-    my $statement = sprintf($statement_lookup{lc $type}, $dba->dbc->dbname);
+    my $sql = sprintf($statement_lookup->{lc $type}, $dba->dbc->dbname);
     my $species = $helper->execute_simple(
       -SQL => $sql, -PARAMS => [$stable_id], -NO_ERROR => 1
     );
+    $dba->dbc->disconnect_if_idle() if $self->disconnect_after_query();
     if($species) {
       #If it was a number then it must have been a simple boolean return 
       #from the statement so make sure we replace it with the right species name
